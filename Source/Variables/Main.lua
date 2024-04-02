@@ -133,6 +133,43 @@ function Auctionator.Variables.InitializeDatabase()
     AUCTIONATOR_PRICE_DATABASE[realm] = data
   end
 
+  Auctionator.Variables.Simulate = function()
+    print("----")
+    local ls
+
+    C_Timer.After(0, function()
+      collectgarbage()
+      local start = debugprofilestop()
+      ls = LibSerialize:Serialize(AUCTIONATOR_PRICE_DATABASE[realm])
+      print("libserialize encode", debugprofilestop() - start)
+    end)
+
+    C_Timer.After(0, function()
+      local cbor = LibStub("LibCBOR-1.0")
+      collectgarbage()
+      local start = debugprofilestop()
+      CBOR = cbor.encode(AUCTIONATOR_PRICE_DATABASE[realm])
+      print("cbor encode", debugprofilestop() - start)
+    end)
+
+    C_Timer.After(1, function()
+      collectgarbage()
+      local start = debugprofilestop()
+      LibSerialize:Deserialize(ls)
+      print("libserialize decode", debugprofilestop() - start)
+    end)
+
+    C_Timer.After(1, function()
+      local cbor = LibStub("LibCBOR-1.0")
+      collectgarbage()
+      local start = debugprofilestop()
+      cbor.decode(CBOR)
+      print("cbor decode", debugprofilestop() - start)
+    end)
+  end
+
+  C_Timer.After(5, Auctionator.Variables.Simulate)
+
   Auctionator.Database = CreateAndInitFromMixin(Auctionator.DatabaseMixin, AUCTIONATOR_PRICE_DATABASE[realm])
   Auctionator.Database:Prune()
 end
