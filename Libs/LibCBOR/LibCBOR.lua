@@ -19,6 +19,7 @@ local maxint = math.huge
 local minint = -math.huge
 local NaN = 0/0;
 local m_type = function (n) return n % 1 == 0 and n <= maxint and n >= minint and "integer" or "float" end;
+local b_rshift = bit and b_rshift or function (a, b) return math.max(0, math.floor(a / (2 ^ b))); end
 
 local _ENV = nil; -- luacheck: ignore 211
 
@@ -39,24 +40,24 @@ local function integer(num, m)
 	elseif num < 2 ^ 8 then
 		return string.char(m + 24, num);
 	elseif num < 2 ^ 16 then
-		return string.char(m + 25, bit.rshift(num, 8), num % 0x100);
+		return string.char(m + 25, b_rshift(num, 8), num % 0x100);
 	elseif num < 2 ^ 32 then
 		return string.char(m + 26,
-			bit.rshift(num, 24) % 0x100,
-			bit.rshift(num, 16) % 0x100,
-			bit.rshift(num, 8) % 0x100,
+			b_rshift(num, 24) % 0x100,
+			b_rshift(num, 16) % 0x100,
+			b_rshift(num, 8) % 0x100,
 			num % 0x100);
 	elseif num < 2 ^ 64 then
 		local high = math.floor(num / 2 ^ 32);
 		num = num % 2 ^ 32;
 		return string.char(m + 27,
-			bit.rshift(high, 24) % 0x100,
-			bit.rshift(high, 16) % 0x100,
-			bit.rshift(high, 8) % 0x100,
+			b_rshift(high, 24) % 0x100,
+			b_rshift(high, 16) % 0x100,
+			b_rshift(high, 8) % 0x100,
 			high % 0x100,
-			bit.rshift(num, 24) % 0x100,
-			bit.rshift(num, 16) % 0x100,
-			bit.rshift(num, 8) % 0x100,
+			b_rshift(num, 24) % 0x100,
+			b_rshift(num, 16) % 0x100,
+			b_rshift(num, 8) % 0x100,
 			num % 0x100);
 	end
 	error "int too large";
@@ -143,8 +144,8 @@ function encoder.utf8string(s)
 	return integer(#s, 96) .. s;
 end
 
--- Lua strings are byte strings
-encoder.string = encoder.bytestring;
+-- Modern Lua strings are UTF-UTF-8
+encoder.string = encoder.utf8string;
 
 function encoder.boolean(bool)
 	return bool and "\245" or "\244";
@@ -161,7 +162,7 @@ function encoder.table(t, opts)
 	-- usually observe.  See the Lua manual regarding the # (length)
 	-- operator.  In the case that this does not happen, we will fall
 	-- back to a map with integer keys, which becomes a bit larger.
-	local array, map, i, p = { integer(#t, 128) }, { "\191" }, 1, 2;
+	local array, map, i = { integer(#t, 128) }, { "\191" }, 1
 	local is_array = true;
 	for k, v in pairs(t) do
 		is_array = is_array and i == k;
@@ -170,10 +171,10 @@ function encoder.table(t, opts)
 		local encoded_v = encode(v, opts);
 		array[i] = encoded_v;
 
-		map[p], p = encode(k, opts), p + 1;
-		map[p], p = encoded_v, p + 1;
+    table.insert(map, encode(k, opts))
+    table.insert(map, encoded_v)
 	end
-	-- map[p] = "\255";
+	--map[#map + 1] = "\255";
 	map[1] = integer(i - 1, 160);
 	return table.concat(is_array and array or map);
 end
@@ -188,14 +189,14 @@ function encoder.array(t, opts)
 end
 
 function encoder.map(t, opts)
-	local map, p, len = { "\191" }, 2, 0;
+	local map = { "\191" }
+  local i = 0
 	for k, v in pairs(t) do
-		map[p], p = encode(k, opts), p + 1;
-		map[p], p = encode(v, opts), p + 1;
-		len = len + 1;
+    i = i + 1
+    table.insert(map, encode(k, opts))
+		table.insert(map, encode(v, opts))
 	end
-	-- map[p] = "\255";
-	map[1] = integer(len, 160);
+	map[1] = integer(i, 160);
 	return table.concat(map);
 end
 encoder.dict = encoder.map; -- COMPAT
@@ -238,7 +239,7 @@ local decoder = {};
 
 local function read_type(fh)
 	local byte = fh.readbyte();
-	return bit.rshift(byte, 5), byte % 32;
+	return b_rshift(byte, 5), byte % 32;
 end
 
 local function read_object(fh, opts)
@@ -333,7 +334,7 @@ local function read_half_float(fh)
 	local sign = exponent < 128 and 1 or -1; -- sign is highest bit
 
 	fraction = fraction + (exponent * 256) % 1024; -- copy two(?) bits from exponent to fraction
-	exponent = bit.rshift(exponent, 2) % 32; -- remove sign bit and two low bits from fraction;
+	exponent = b_rshift(exponent, 2) % 32; -- remove sign bit and two low bits from fraction;
 
 	if exponent == 0 then
 		return sign * math.ldexp(fraction, -24);
@@ -350,7 +351,7 @@ local function read_float(fh)
 	local exponent = fh.readbyte();
 	local fraction = fh.readbyte();
 	local sign = exponent < 128 and 1 or -1; -- sign is highest bit
-	exponent = exponent * 2 % 256 + bit.rshift(fraction, 7);
+	exponent = exponent * 2 % 256 + b_rshift(fraction, 7);
 	fraction = fraction % 128;
 	fraction = fraction * 256 + fh.readbyte();
 	fraction = fraction * 256 + fh.readbyte();
@@ -371,7 +372,7 @@ local function read_double(fh)
 	local fraction = fh.readbyte();
 	local sign = exponent < 128 and 1 or -1; -- sign is highest bit
 
-	exponent = exponent %  128 * 16 + bit.rshift(fraction, 4);
+	exponent = exponent %  128 * 16 + b_rshift(fraction, 4);
 	fraction = fraction % 16;
 	fraction = fraction * 256 + fh.readbyte();
 	fraction = fraction * 256 + fh.readbyte();
@@ -478,7 +479,7 @@ end
 
 for key, val in pairs({
 	-- en-/decoder functions
-	encode = encode;
+	encode = function(...) return encode(...) .. "\255" end;
 	decode = decode;
 
 	-- tables of per-type en-/decoders
