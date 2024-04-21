@@ -8,27 +8,21 @@ if not LibStub then
   LibCBOR = {}
   lib = LibCBOR
 else
-  lib = LibStub:NewLibrary("LibCBOR-1.0", 3)
+  lib = LibStub:NewLibrary("LibCBOR-1.0", 4)
 end
 
 if not lib then
   return
 end
 
-local maxint = math.huge
-local minint = -math.huge
 local NaN = math.sin(math.huge)
-local m_type = function (n) return n % 1 == 0 and n <= maxint and n >= minint and "integer" or "float" end;
 local b_rshift = bit and bit.rshift or function (a, b) return math.max(0, math.floor(a / (2 ^ b))); end
+local wipe = table and table.wipe or function(tbl) for key in pairs(tbl) do tbl[key] = nil end end
 
 local encoder = {};
 
 -- Major types 0, 1 and length encoding for others
 local function integer(num, m)
-  if m == 0 and num < 0 then
-    -- negative integer, major type 1
-    num, m = - num - 1, 32;
-  end
   if num < 24 then
     return string.char(m + num);
   elseif num < 2 ^ 8 then
@@ -58,63 +52,73 @@ local function integer(num, m)
 end
 
 local function encode(obj)
-  return encoder[type(obj)](obj);
+  return encoder[type(obj)](obj)
 end
 
 local function encode2(root)
   if type(root) == "table" then
     local keychain = {}
-    --local rootsInKeychain = {}
+    local keychainIndex = 0
+    local keychainLimit = 0
     local current
     while true do
-      local obj = root
+      local obj
+      local currentKey
       if current then
-        obj = current.root[current.keys[current.index]]
+        currentKey = current.keys[current.index]
+        obj = current.root[currentKey]
+      else
+        obj = root
       end
       local objType = type(obj)
       if objType == "table" then
         local keys = {}
+        local isArray, i = true, 1
         for key in pairs(obj) do
           keys[#keys + 1] = key
+          if isArray and i ~= key then
+            isArray = false
+            i = i + 1
+          end
         end
-        keychain[#keychain + 1] = {root = obj, keys = keys, index = 1, results = {}}
-        --rootsInKeychain[obj] = true
-        current = keychain[#keychain]
+        keychainIndex = keychainIndex + 1
+        if keychainIndex <= keychainLimit then
+          current = keychain[keychainIndex]
+          current.root, current.keys, current.index, current.isArray = obj, keys, 1, isArray
+        else
+          keychain[keychainIndex] = {root = obj, keys = keys, index = 1, results = {}, isArray = isArray}
+          keychainLimit = keychainIndex
+          current = keychain[keychainIndex]
+        end
+        if isArray then
+          current.results[1] = integer(#keys, 128)
+        else
+          current.results[1] = integer(#keys, 160)
+        end
+      elseif current.isArray and obj ~= nil then
+        current.results[current.index + 1] = encoder[objType](obj)
+        current.index = current.index + 1
       elseif obj ~= nil then
-        current.results[current.index] = encoder[objType](obj)
+        local index2 = current.index * 2
+        current.results[index2] = encoder[type(currentKey)](currentKey)
+        current.results[index2 + 1] = encoder[objType](obj)
         current.index = current.index + 1
       else
-        keychain[#keychain] = nil
         local isArray = true
-        for index = 1, #current.results do
-          if index ~= current.keys[index] then
-            isArray = false
-            break
-          end
-        end
-        local result
-        if isArray then
-          local results = current.results
-          table.insert(results, 1, integer(#results, 128))
-          result = table.concat(results)
-        else
-          local results, keys = current.results, current.keys
-          local tmp = { integer(#results, 160) }
-          for index = 1, #results do
-            local position = index * 2
-            local key = keys[index]
-            tmp[position] = encoder[type(key)](key)
-            local r = current.results[index]
-            tmp[position + 1] = r
-          end
-          result = table.concat(tmp)
-        end
-        --rootsInKeychain[current.root] = nil
-        current = keychain[#keychain]
+        local result = table.concat(current.results)
+        wipe(current.results)
+        keychainIndex = keychainIndex - 1
+        current = keychain[keychainIndex]
         if current == nil then
           return result
+        elseif current.isArray then
+          current.results[current.index + 1] = result
+          current.index = current.index + 1
         else
-          current.results[current.index] = result
+          local currentKey = current.keys[current.index]
+          local index2 = current.index * 2
+          current.results[index2] = encoder[type(currentKey)](currentKey)
+          current.results[index2 + 1] = result
           current.index = current.index + 1
         end
       end
@@ -124,32 +128,8 @@ local function encode2(root)
   end
 end
 
-local simple_mt = {};
-function simple_mt:__tostring() return self.name or ("simple(%d)"):format(self.value); end
-function simple_mt:__tocbor() return self.cbor or integer(self.value, 224); end
-
-local function simple(value, name, cbor)
-  assert(value >= 0 and value <= 255, "bad argument #1 to 'simple' (integer in range 0..255 expected)");
-  return setmetatable({ value = value, name = name, cbor = cbor }, simple_mt);
-end
-
-local BREAK = simple(31, "break", "\255");
-
--- Number types dispatch
-function encoder.number(num)
-  return encoder[m_type(num)](num);
-end
-
--- Major types 0, 1
-function encoder.integer(num)
-  if num < 0 then
-    return integer(-1 - num, 32);
-  end
-  return integer(num, 0);
-end
-
 -- Major type 7
-function encoder.float(num)
+local function encoder_float(num)
   if (num < 0) == (num >= 0) then -- NaN shortcut
     return "\249\255\255";
   end
@@ -183,6 +163,15 @@ function encoder.float(num)
   )
 end
 
+-- Number types dispatch
+function encoder.number(num)
+  if num % 1 == 0 and num < 2^64 and num > - 2^64 + 1 then
+    -- Major types 0, 1
+    return num < 0 and integer(- 1 - num, 32) or integer(num, 0)
+  else
+    return encoder_float(num)
+  end
+end
 
 -- Major type 2 - byte strings
 function encoder.bytestring(s)
@@ -237,31 +226,33 @@ local function read_length(fh, mintyp)
   if mintyp < 24 then
     return mintyp;
   elseif mintyp < 28 then
-    local out = 0;
-    for _ = 1, 2 ^ (mintyp - 24) do
-      out = out * 256 + fh.readbyte();
+    local bytes = 2 ^ (mintyp - 24)
+    local n1, n2, n3, n4, n5, n6, n7, n8 = fh.readbytes(bytes)
+    if n8 then
+      return n1 * 256 ^ 7 + n2 * 256 ^ 6 + n3 * 256 ^ 5 + n4 * 256 ^ 4 + n5 * 256 ^ 3 + n6 * 256 ^ 2 + n7 * 256 + n8
+    elseif n4 then
+      return n1 * 256 ^ 3 + n2 * 256 ^ 2 + n3 * 256 + n4
+    elseif n2 then
+      return n1 * 256 + n2
+    else
+      return n1
     end
-    return out;
   else
     error "invalid length";
   end
 end
 
+local BREAK = {} -- Empty table to be unique constant
+
 local decoder = {};
 
-local function read_type(fh)
-  local byte = fh.readbyte();
-  return b_rshift(byte, 5), byte % 32;
-end
-
 local function read_object(fh)
-  local typ, mintyp = read_type(fh);
+  local byte = fh.readbyte();
+  local typ, mintyp = b_rshift(byte, 5), byte % 32;
   return decoder[typ](fh, mintyp);
 end
 
-local function read_integer(fh, mintyp)
-  return read_length(fh, mintyp);
-end
+local read_integer = read_length
 
 local function read_negative_integer(fh, mintyp)
   return -1 - read_length(fh, mintyp);
@@ -281,14 +272,7 @@ local function read_string(fh, mintyp)
   return table.concat(out);
 end
 
-local function read_unicode_string(fh, mintyp)
-  return read_string(fh, mintyp);
-  -- local str = read_string(fh, mintyp);
-  -- if have_utf8 and not utf8.len(str) then
-    -- TODO How to handle this?
-  -- end
-  -- return str;
-end
+local read_unicode_string = read_string
 
 local function read_array(fh, mintyp)
   local out = {};
@@ -337,12 +321,11 @@ local function read_semantic(fh, mintyp)
   if postproc then
     return postproc(value);
   end
-  return tagged(tag, value);
+  return nil;
 end
 
 local function read_half_float(fh)
-  local exponent = fh.readbyte();
-  local fraction = fh.readbyte();
+  local exponent, fraction = fh.readbytes(2);
   local sign = exponent < 128 and 1 or -1; -- sign is highest bit
 
   fraction = fraction + (exponent * 256) % 1024; -- copy two(?) bits from exponent to fraction
@@ -360,8 +343,7 @@ local function read_half_float(fh)
 end
 
 local function read_float(fh)
-  local exponent = fh.readbyte();
-  local fraction = fh.readbyte();
+  local exponent, fraction = fh.readbytes(2);
   local sign = exponent < 128 and 1 or -1; -- sign is highest bit
   exponent = exponent * 2 % 256 + b_rshift(fraction, 7);
   fraction = fraction % 128;
@@ -380,8 +362,7 @@ local function read_float(fh)
 end
 
 local function read_double(fh)
-  local exponent = fh.readbyte();
-  local fraction = fh.readbyte();
+  local exponent, fraction = fh.readbytes(2);
   local sign = exponent < 128 and 1 or -1; -- sign is highest bit
 
   exponent = exponent %  128 * 16 + b_rshift(fraction, 4);
@@ -425,7 +406,7 @@ local function read_simple(fh, value)
   elseif value == 31 then
     return BREAK;
   end
-  return simple(value);
+  return nil;
 end
 
 decoder[0] = read_integer;
@@ -441,36 +422,23 @@ local function decode(s)
   local fh = {};
   local pos = 1;
 
-  local more = nil
-  if type(more) ~= "function" then
-    more = function()
-      error "input too short";
-    end
-  end
-
   function fh.read(bytes)
-    local ret = string.sub(s, pos, pos + bytes - 1);
-    if #ret < bytes then
-      ret = more(bytes - #ret, fh);
-      if ret then self.write(ret); end
-      return self.read(bytes);
-    end
-    pos = pos + bytes;
+    local newPos = pos + bytes
+    local ret = string.sub(s, pos, newPos - 1);
+    pos = newPos;
     return ret;
   end
 
   function fh.readbyte()
+    local oldPos = pos
     pos = pos + 1
-    return string.byte(s, pos - 1)
+    return string.byte(s, oldPos)
   end
 
-  function fh.write(bytes) -- luacheck: no self
-    s = s .. bytes;
-    if pos > 256 then
-      s = string.sub(s, pos + 1);
-      pos = 1;
-    end
-    return #bytes;
+  function fh.readbytes(bytes)
+    local oldPos = pos
+    pos = pos + bytes
+    return string.byte(s, oldPos, pos - 1)
   end
 
   return read_object(fh);

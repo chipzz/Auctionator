@@ -135,48 +135,43 @@ function Auctionator.Variables.InitializeDatabase()
 
   Auctionator.Variables.Simulate = function()
     print("----")
-    local ls
+    local ls, e0
 
-    C_Timer.After(0, function()
+    C_Timer.After(0.1, function()
       collectgarbage()
       local start = debugprofilestop()
       ls = LibSerialize:Serialize(AUCTIONATOR_PRICE_DATABASE[realm])
-      local e1 = debugprofilestop() - start
-      print("libserialize encode", e1)
-      print("libserialize length", #ls)
+      e0 = debugprofilestop() - start
+      print("LibSerialize Serialize", e0)
+      print("LibSerialize Length", #ls)
     end)
 
-    C_Timer.After(0, function()
+    C_Timer.After(2, function()
       local cbor = LibStub("LibCBOR-1.0")
+      local e1, e2
       collectgarbage()
       local start = debugprofilestop()
-      CBOR = cbor.encode(AUCTIONATOR_PRICE_DATABASE[realm])
-      local e1 = debugprofilestop() - start
-      print("cbor encode", e1)
-      print("cbor length", #CBOR)
-      collectgarbage()
-      local start = debugprofilestop()
-      CBOR = cbor.encode2(AUCTIONATOR_PRICE_DATABASE[realm])
-      local e2 = debugprofilestop() - start
-      print("cbor2 encode", e2)
-      print("cbor2 length", #CBOR)
-      print("diff", (e2 - e1) / e2)
+      CBOR = cbor:Serialize(AUCTIONATOR_PRICE_DATABASE[realm])
+      e2 = debugprofilestop() - start
+      print("LibCBOR Serialize", e2)
+      print("LibCBOR Length", #CBOR)
+      print("Perf Boost", (e0 - e2) / e0)
     end)
 
-    C_Timer.After(1, function()
-      collectgarbage()
+    C_Timer.After(4, function()
+      local e1, e2
       local start = debugprofilestop()
       LibSerialize:Deserialize(ls)
-      print("libserialize decode", debugprofilestop() - start)
-    end)
-
-    C_Timer.After(1, function()
-      local cbor = LibStub("LibCBOR-1.0")
-      collectgarbage()
-      local start = debugprofilestop()
-      local res = cbor.decode(CBOR)
-      print("cbor decode", debugprofilestop() - start)
-      print(tCompare(res, AUCTIONATOR_PRICE_DATABASE[realm]))
+      e1 = debugprofilestop() - start
+      print("LibSerialize Deserialize", e1)
+      C_Timer.After(1, function()
+        local cbor = LibStub("LibCBOR-1.0")
+        local start = debugprofilestop()
+        local res = cbor.decode(CBOR)
+        e2 = debugprofilestop() - start
+        print("LibCBOR Deserialize", e2)
+        print("Perf Boost", (e1 - e2) / e1)
+      end)
     end)
   end
 
