@@ -71,6 +71,39 @@ local function ImportFromNotNormalizedName(target)
 
   return false
 end
+-- This is a deep compare on the values of the table (based on depth) but not a deep comparison
+-- of the keys, as this would be an expensive check and won't be necessary in most cases.
+local function tCompare(lhsTable, rhsTable, depth)
+	depth = depth or 1;
+	for key, value in pairs(lhsTable) do
+		if type(value) == "table" then
+			local rhsValue = rhsTable[key];
+			if type(rhsValue) ~= "table" then
+        print("not table", key, value, rhsTable[key])
+				return false;
+			end
+			if depth > 1 then
+				if not tCompare(value, rhsValue, depth - 1) then
+          print(key, value)
+					return false;
+				end
+			end
+		elseif value ~= rhsTable[key] then
+      print(key, value)
+			return false;
+		end
+	end
+
+	-- Check for any keys that are in rhsTable and not lhsTable.
+	for key, value in pairs(rhsTable) do
+		if lhsTable[key] == nil then
+      print("missing", key)
+			return false;
+		end
+	end
+
+	return true;
+end
 
 -- Deserialize current realm when not already deserialized in the saved
 -- variables and serialize any other realms.
@@ -136,8 +169,7 @@ function Auctionator.Variables.InitializeDatabase()
   Auctionator.Variables.Simulate = function()
     print("----")
     local ls, e0
-
-    C_Timer.After(0.1, function()
+    C_Timer.After(0, function()
       collectgarbage()
       local start = debugprofilestop()
       ls = LibSerialize:Serialize(AUCTIONATOR_PRICE_DATABASE[realm])
@@ -146,7 +178,7 @@ function Auctionator.Variables.InitializeDatabase()
       print("LibSerialize Length", #ls)
     end)
 
-    C_Timer.After(2, function()
+    C_Timer.After(0.1, function()
       local cbor = LibStub("LibCBOR-1.0")
       local e1, e2
       collectgarbage()
@@ -158,19 +190,27 @@ function Auctionator.Variables.InitializeDatabase()
       print("Perf Boost", (e0 - e2) / e0)
     end)
 
-    C_Timer.After(4, function()
-      local e1, e2
+    C_Timer.After(0.2, function()
+      local e1, e2, e3
       local start = debugprofilestop()
       LibSerialize:Deserialize(ls)
       e1 = debugprofilestop() - start
       print("LibSerialize Deserialize", e1)
       C_Timer.After(1, function()
         local cbor = LibStub("LibCBOR-1.0")
+        collectgarbage()
         local start = debugprofilestop()
         local res = cbor.decode(CBOR)
         e2 = debugprofilestop() - start
-        print("LibCBOR Deserialize", e2)
+        print("LibCBOR1 Deserialize", e2, tCompare(res, AUCTIONATOR_PRICE_DATABASE[realm]))
+        collectgarbage()
+        start = debugprofilestop()
+        res = cbor.decode2(CBOR)
+        e3 = debugprofilestop() - start
+        print("LibCBOR2 Deserialize", e3, tCompare(res, AUCTIONATOR_PRICE_DATABASE[realm]))
+        print("CBOR Perf Boost", (e2 - e3) / e2)
         print("Perf Boost", (e1 - e2) / e1)
+        print("Perf Boost", (e1 - e3) / e1)
       end)
     end)
   end
